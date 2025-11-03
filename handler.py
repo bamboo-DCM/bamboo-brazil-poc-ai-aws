@@ -1,14 +1,15 @@
-
 import boto3
 import botocore
 import json
 import urllib.parse
 import os
 import io
-import fitz 
+import fitz  # PyMuPDF
 import re
 import time 
+from datetime import datetime, timezone
 
+# --- Configuração Global ---
 MODELO_ID_MICRO = "amazon.nova-lite-v1:0" 
 
 try:
@@ -20,6 +21,7 @@ except Exception as e:
     bedrock_runtime = None
     s3_client = None
 
+# --- Funções Helper ---
 
 def get_text_from_pdf_bytes(pdf_bytes):
     """Extrai o TEXTO PURO de um PDF usando PyMuPDF (fitz)."""
@@ -111,41 +113,71 @@ def _limpar_json(json_string):
                 json_string = json_string[start_index:]
     return json_string
 
-def get_full_json_schema():
-    """Retorna o JSON-SCHEMA COMPLETO, com todas as seções aninhadas."""
-    full_schema = {
-        "Identificação e Informações Gerais": {
-            "Denominação da emissão": "string", "Data de emissão": "string (YYYY-MM-DD)",
-            "Securitizadora": {"Nome": "string", "CNPJ": "string", "Sede": "string"},
-            "Cedente(s)": "string", "Agente fiduciário": "string", "Auditor": "string",
-            "Custodiante": "string", "Rating": "string"
+# --- FUNÇÃO DE SCHEMA ATUALIZADA ---
+def get_dados_extraidos_schema():
+    """
+    Retorna o JSON-SCHEMA para o objeto 'dados_extraidos', 
+    combinando o formato do cliente com os campos qualitativos.
+    """
+    schema = {
+        "tipo_documento": "string (ex: 'Termo de Securitização')",
+        "numero_emissao": "string (Número da emissão, ex: '522')",
+        "isin": "string (Código ISIN, se disponível, ex: 'BRRBRACRIY12')",
+        
+        # --- Partes Envolvidas ---
+        "securitizadora": {
+            "nome": "string (Nome da companhia)",
+            "cnpj": "string (XX.XXX.XXX/XXXX-XX)"
         },
-        "Descrição dos Créditos Securitizados": {
-            "Natureza dos créditos": "string", "Origem dos créditos": "string",
-            "Valor total da carteira": "number", "Fluxo esperado": "string",
-            "Critérios de elegibilidade": "string", "Garantias associadas": "string",
-            "Procedimento de substituição": "string"
+        "devedor": { 
+            "nome": "string (Nome/Razão Social do devedor/cedente)",
+            "cnpj": "string (XX.XXX.XXX/XXXX-XX)",
+            "endereco": "string (Endereço completo, se disponível)",
+            "cidade": "string",
+            "estado": "string"
         },
-        "Características dos Títulos Emitidos": {
-            "Quantidade e valor nominal": "string", "Forma e espécie": "string",
-            "Prazo e data de vencimento": "string", "Remuneração": "string",
-            "Forma e local de pagamento": "string", "Amortização e resgate": "string",
-            "Eventos de vencimento antecipado": "string", "Ranking (waterfall)": "string"
-        },
-        "Obrigações e Direitos das Partes": {
-            "Obrigações da secururitizadora": "string", "Direitos dos investidores": "string",
-            "Função do agente fiduciário": "string", "Mecanismos de reforço": "string",
-            "Destinação dos recursos": "string"
-        },
-        "Informações Regulatórias e Contábeis": {
-            "Registros e autorizações": "string", "Tributação aplicável": "string",
-            "Demonstrações financeiras": "string"
-        },
-        "Disposições Gerais": {
-            "Legislação aplicável": "string", "Foro": "string", "Assinaturas": "string"
-        }
+        "agente_fiduciario": "string (Nome da instituição)",
+        "auditor": "string (Nome do auditor da operação)",
+        "agencia_rating": "string (Nome da agência de rating, ex: 'S&P')",
+        "rating_emissao": "string (A nota/classificação de risco, ex: 'AAA(br)')",
+
+        # --- Características da Emissão ---
+        "volume_total": "number (Valor monetário total da emissão, ex: 20000000.0)",
+        "destinacao_recursos": "string (Finalidade dos recursos)",
+        "categoria_anbima": "string (ex: 'Residencial, corporativo')",
+        "segmento_anbima": "string (ex: 'Apartamentos')",
+        
+        # --- Lastro e Garantias ---
+        "natureza_creditos": "string (ex: 'Créditos Imobiliários', 'Créditos do Agronegócio')",
+        "criterios_elegibilidade": "string (Resumo das regras que definem os créditos)",
+        "garantias": "string (Descrição das garantias da operação, ex: Hipoteca, Alienação Fiduciária)",
+        "mecanismos_reforco_credito": "string (Descrição de Fundo de Reserva, Sobrecolateralização, etc.)",
+        "indice_subordinacao": "string (Se aplicável, ex: '10%')",
+        
+        # --- Campos de texto livre  ---
+        "estrutura_lastro_garantia": "string (Resumo da estrutura)",
+        "estrutura_pagamentos_covenants": "string (Resumo da estrutura)",
+        
+        # --- Títulos (Séries) ---
+        "amortizacao_resgate": "string (Resumo de como o principal será pago)",
+        "eventos_vencimento_antecipado": "string (Resumo das situações que antecipam o vencimento)",
+        
+        "series": [ 
+            {
+                "nome": "string (Nome da série, ex: '1ª Série')",
+                "volume": "number (Valor monetário da série)",
+                "taxa_remuneracao": "number (Valor da taxa, ex: 32.25)",
+                "indexador_taxa_remuneracao": "string (ex: 'Fixa', 'DI (d-4)')",
+                "data_vencimento": "string (YYYY-MM-DD)",
+                "data_emissao": "string (YYYY-MM-DD)"
+            }
+        ],
+        
+        # --- Regulatório ---
+        "registro_cvm_autorizacoes": "string (O número de registro na CVM ou outra autoridade)",
+        "legislacao_aplicavel": "string (ex: 'Lei nº 9.514/1997', 'Normas da CVM')"
     }
-    return json.dumps(full_schema, indent=2, ensure_ascii=False)
+    return json.dumps(schema, indent=2, ensure_ascii=False)
 
 
 # --- O HANDLER PRINCIPAL (Sumarização Hierárquica) ---
@@ -166,6 +198,7 @@ def lambda_handler(event, context):
         s3_record = event['Records'][0]['s3']
         bucket_name = s3_record['bucket']['name']
         object_key = urllib.parse.unquote_plus(s3_record['object']['key'], encoding='utf-8')
+        file_name_only = os.path.basename(object_key)
         print(f"Processando arquivo: s3://{bucket_name}/{object_key}")
         
         file_obj = s3_client.get_object(Bucket=bucket_name, Key=object_key)
@@ -177,28 +210,32 @@ def lambda_handler(event, context):
         # 3. (Split) Criar a lista de Chunks
         chunks = split_text_into_chunks(document_text)
 
-        # --- INÍCIO DA MODIFICAÇÃO (DEBUG DE CHUNKS) ---
+        # (Debug de Chunks - mantido da sua solicitação anterior)
         print("Salvando os 5 primeiros chunks em 'debug_chunks.txt'...")
         try:
             with open("debug_chunks.txt", "w", encoding="utf-8") as f:
-                for i, chunk in enumerate(chunks[:5]): # Pega os 5 primeiros
+                for i, chunk in enumerate(chunks[:5]):
                     f.write(f"--- CHUNK {i+1} (Início) ---\n")
                     f.write(chunk)
                     f.write(f"\n--- CHUNK {i+1} (Fim) ---\n\n")
             print("Arquivo 'debug_chunks.txt' salvo com sucesso.")
         except Exception as e:
             print(f"AVISO: Falha ao salvar arquivo de debug: {e}")
-        # --- FIM DA MODIFICAÇÃO ---
 
         # 4. (Map) Iterar, Sumarizar e Concatenar
         print("Iniciando 'Map' para sumarizar chunks...")
         summaries_list = []
         
+        # --- PROMPT DE SUMARIZAÇÃO (---
         system_prompt_map = """
         Você é um assistente de sumarização. Sua tarefa é ler o trecho de texto e
-        sumarizá-lo em alguns pontos principais. Foque em dados financeiros, 
-        nomes de empresas (Securitizadora, Cedente, Agente Fiduciário), 
-        datas, valores, obrigações e características dos títulos.
+        sumarizá-lo em alguns pontos principais. Foque em:
+        - Nomes de empresas (Securitizadora, Devedor, Cedente, Agente Fiduciário, Auditor, Agência de Rating)
+        - Dados financeiros (Valores, taxas, volumes)
+        - Datas (Emissão, Vencimento)
+        - Identificadores (ISIN, CVM, Nº da Emissão)
+        - Características dos títulos (Séries, garantias, amortização, reforço de crédito, covenants)
+        - Regras (Critérios de elegibilidade, legislação)
         Se o trecho for irrelevante (ex: índice, página em branco), retorne 'N/A'.
         """
         
@@ -225,21 +262,23 @@ def lambda_handler(event, context):
         
         super_summary_context = "\n\n--- NOVO SUMÁRIO ---\n\n".join(summaries_list)
 
-        # 5. (Reduce) Extrair o JSON final do "super-sumário"
+        # 5. (Reduce) Extrair o JSON final 
         print("Iniciando 'Reduce' para extrair JSON do super-sumário...")
         
-        full_schema_str = get_full_json_schema()
+        schema_str = get_dados_extraidos_schema()
         
         system_prompt_reduce = f"""
         Você é um assistente especialista em análise de documentos financeiros.
-        Sua tarefa é extrair dados de um *sumário* de documento e formatá-los em JSON.
+        Sua tarefa é extrair dados de um *sumário* de documento e formatá-los 
+        em JSON, de acordo com o schema fornecido.
         
-        Formato de Saída (JSON Schema Completo):
+        Formato de Saída (JSON Schema):
         <schema>
-        {full_schema_str}
+        {schema_str}
         </schema>
         
-        Responda *APENAS* com o JSON preenchido. Não inclua '```json', introduções ou explicações.
+        Responda *APENAS* com o JSON preenchido (o objeto 'dados_extraidos'). 
+        Não inclua '```json', introduções ou explicações.
         Como você está lendo um sumário, é normal que muitos campos fiquem 'null'.
         """
         
@@ -260,18 +299,26 @@ def lambda_handler(event, context):
         print(f"Observabilidade Total: InputTokens={total_tokens_usados['input']}, OutputTokens={total_tokens_usados['output']}")
 
         # 6. Salva o JSON final de volta no S3
+        
         try:
             cleaned_json = _limpar_json(json_string_answer)
-            final_json_data = json.loads(cleaned_json)
+            dados_extraidos_json = json.loads(cleaned_json)
         except json.JSONDecodeError:
             print("Erro: Bedrock retornou uma string que NÃO é um JSON válido.")
             print(f"--- Resposta Bruta Recebida --- \n{json_string_answer}\n--- Fim da Resposta ---")
             return {"status": "error", "reason": "Resposta do Reduce não é um JSON válido."}
 
+        # Cria o "wrapper" de metadata
+        final_json_data = {
+            "arquivo_origem": file_name_only,
+            "tipo_documento": "termo_securitizacao",
+            "data_extracao": datetime.now(timezone.utc).isoformat(),
+            "dados_extraidos": dados_extraidos_json, # Aninha o resultado do LLM
+            "merge_info": None # Define como nulo
+        }
+
         # Constrói o caminho de saída
         output_key_json = object_key.replace(".pdf", ".json")
-        
-        # Correção do 'os.basename' para 'os.path.basename'
         file_name = os.path.basename(output_key_json)
         output_key = f"output/{file_name}"
         
