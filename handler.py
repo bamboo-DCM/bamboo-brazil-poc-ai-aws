@@ -8,9 +8,9 @@ import fitz  # PyMuPDF
 import re
 import time 
 from datetime import datetime, timezone
+import merge
 
-# --- Configuração Global ---
-MODELO_ID_MICRO = "amazon.nova-lite-v1:0" 
+MODELO_ID_MICRO = "amazon.nova-pro-v1:0" 
 
 try:
     s3_client = boto3.client('s3')
@@ -22,7 +22,6 @@ except Exception as e:
     s3_client = None
 
 # --- Funções Helper ---
-
 def get_text_from_pdf_bytes(pdf_bytes):
     """Extrai o TEXTO PURO de um PDF usando PyMuPDF (fitz)."""
     print("Extraindo texto puro do PDF (bytes) com PyMuPDF...")
@@ -113,7 +112,6 @@ def _limpar_json(json_string):
                 json_string = json_string[start_index:]
     return json_string
 
-# --- FUNÇÃO DE SCHEMA ATUALIZADA ---
 def get_dados_extraidos_schema():
     """
     Retorna o JSON-SCHEMA para o objeto 'dados_extraidos', 
@@ -154,7 +152,7 @@ def get_dados_extraidos_schema():
         "mecanismos_reforco_credito": "string (Descrição de Fundo de Reserva, Sobrecolateralização, etc.)",
         "indice_subordinacao": "string (Se aplicável, ex: '10%')",
         
-        # --- Campos de texto livre  ---
+        # (Campos de texto livre)
         "estrutura_lastro_garantia": "string (Resumo da estrutura)",
         "estrutura_pagamentos_covenants": "string (Resumo da estrutura)",
         
@@ -181,13 +179,15 @@ def get_dados_extraidos_schema():
 
 
 # --- O HANDLER PRINCIPAL (Sumarização Hierárquica) ---
-
 def lambda_handler(event, context):
     """
-    Handler principal do Lambda. Espera um evento de S3 (ObjectCreated).
-    Implementa a lógica de Sumarização Hierárquica (Map-Reduce).
+    Handler principal do Lambda.
+    1. Executa o MapReduce no arquivo de entrada.
+    2. Verifica se um JSON anterior existe.
+    3. Se sim, chama o módulo de Merge.
+    4. Salva o resultado final.
     """
-    print("Iniciando a função Lambda (Sumarização Hierárquica)...")
+    print("Iniciando a função Lambda (com lógica de Merge)...")
     
     if not bedrock_runtime or not s3_client:
         print("Erro: Clientes Boto3 não foram inicializados.")
@@ -210,118 +210,107 @@ def lambda_handler(event, context):
         # 3. (Split) Criar a lista de Chunks
         chunks = split_text_into_chunks(document_text)
 
-        # (Debug de Chunks - mantido da sua solicitação anterior)
-        print("Salvando os 5 primeiros chunks em 'debug_chunks.txt'...")
-        try:
-            with open("debug_chunks.txt", "w", encoding="utf-8") as f:
-                for i, chunk in enumerate(chunks[:5]):
-                    f.write(f"--- CHUNK {i+1} (Início) ---\n")
-                    f.write(chunk)
-                    f.write(f"\n--- CHUNK {i+1} (Fim) ---\n\n")
-            print("Arquivo 'debug_chunks.txt' salvo com sucesso.")
-        except Exception as e:
-            print(f"AVISO: Falha ao salvar arquivo de debug: {e}")
-
         # 4. (Map) Iterar, Sumarizar e Concatenar
         print("Iniciando 'Map' para sumarizar chunks...")
         summaries_list = []
-        
-        # --- PROMPT DE SUMARIZAÇÃO (---
         system_prompt_map = """
-        Você é um assistente de sumarização. Sua tarefa é ler o trecho de texto e
-        sumarizá-lo em alguns pontos principais. Foque em:
-        - Nomes de empresas (Securitizadora, Devedor, Cedente, Agente Fiduciário, Auditor, Agência de Rating)
-        - Dados financeiros (Valores, taxas, volumes)
-        - Datas (Emissão, Vencimento)
-        - Identificadores (ISIN, CVM, Nº da Emissão)
-        - Características dos títulos (Séries, garantias, amortização, reforço de crédito, covenants)
-        - Regras (Critérios de elegibilidade, legislação)
-        Se o trecho for irrelevante (ex: índice, página em branco), retorne 'N/A'.
+        You are a summarization assistant. Your task is to read the text excerpt and
+        summarize it into a few key points. Focus on:
+        - Company names (Securitizadora, Debtor, Assignor, Fiduciary Agent, Auditor, Rating Agency)
+        - Financial data (Values, rates, volumes)
+        - Dates (Issuance, Maturity)
+        - Identifiers (ISIN, CVM, Issuance Number)
+        - Security characteristics (Series, guarantees, amortization, credit enhancement, covenants)
+        - Rules (Eligibility criteria, legislation)
+        If the excerpt is irrelevant (e.g., index, blank page), return 'N/A'.
         """
-        
+
         total_tokens_usados = {"input": 0, "output": 0}
         
         for i, chunk in enumerate(chunks):
             user_prompt_map = f"<contexto>\n{chunk}\n</contexto>\n\nSumarize os pontos principais deste contexto."
-            
             summary_text, in_tok, out_tok = call_bedrock_llm(
-                system_prompt_map, 
-                user_prompt_map, 
-                max_tokens=256, 
-                temperature=0.0
+                system_prompt_map, user_prompt_map, max_tokens=256, temperature=0.0
             )
-            
             print(f"Log: Passo='Map-Summarize', Chunk={i+1}/{len(chunks)}, InTokens={in_tok}, OutTokens={out_tok}")
             total_tokens_usados["input"] += in_tok
             total_tokens_usados["output"] += out_tok
-
             if 'N/A' not in summary_text:
                 summaries_list.append(summary_text)
         
         print(f"Sumarização concluída. {len(summaries_list)} sumários relevantes gerados.")
-        
         super_summary_context = "\n\n--- NOVO SUMÁRIO ---\n\n".join(summaries_list)
 
-        # 5. (Reduce) Extrair o JSON final 
-        print("Iniciando 'Reduce' para extrair JSON do super-sumário...")
-        
+        # 5. (Reduce) Extrair o JSON do arquivo ATUAL
+        print("Iniciando 'Reduce' para extrair JSON do arquivo atual...")
         schema_str = get_dados_extraidos_schema()
-        
         system_prompt_reduce = f"""
-        Você é um assistente especialista em análise de documentos financeiros.
-        Sua tarefa é extrair dados de um *sumário* de documento e formatá-los 
-        em JSON, de acordo com o schema fornecido.
-        
-        Formato de Saída (JSON Schema):
-        <schema>
-        {schema_str}
-        </schema>
-        
-        Responda *APENAS* com o JSON preenchido (o objeto 'dados_extraidos'). 
-        Não inclua '```json', introduções ou explicações.
-        Como você está lendo um sumário, é normal que muitos campos fiquem 'null'.
+            You are an assistant specialized in analyzing financial documents.
+            Your task is to extract data from a document summary and format it
+            as JSON, according to the provided schema. Respond with ONLY the JSON.
+        <schema>{schema_str}</schema>
         """
-        
         user_prompt_reduce = f"<contexto_sumarizado>\n{super_summary_context}\n</contexto_sumarizado>\n\nExtraia os dados deste contexto."
         
         json_string_answer, in_tok, out_tok = call_bedrock_llm(
-            system_prompt_reduce,
-            user_prompt_reduce,
-            max_tokens=8192, 
-            temperature=0.0
+            system_prompt_reduce, user_prompt_reduce, max_tokens=8192, temperature=0.0
         )
         
         print(f"Log: Passo='Reduce-Extract', InTokens={in_tok}, OutTokens={out_tok}")
         total_tokens_usados["input"] += in_tok
         total_tokens_usados["output"] += out_tok
-        
-        print(f"--- Extração Concluída ---")
-        print(f"Observabilidade Total: InputTokens={total_tokens_usados['input']}, OutputTokens={total_tokens_usados['output']}")
+        print("Extração MapReduce concluída.")
 
-        # 6. Salva o JSON final de volta no S3
-        
         try:
-            cleaned_json = _limpar_json(json_string_answer)
-            dados_extraidos_json = json.loads(cleaned_json)
+            dados_extraidos_json = json.loads(_limpar_json(json_string_answer))
         except json.JSONDecodeError:
-            print("Erro: Bedrock retornou uma string que NÃO é um JSON válido.")
+            print("Erro: Bedrock retornou uma string que NÃO é um JSON válido (Fase Reduce).")
             print(f"--- Resposta Bruta Recebida --- \n{json_string_answer}\n--- Fim da Resposta ---")
             return {"status": "error", "reason": "Resposta do Reduce não é um JSON válido."}
 
-        # Cria o "wrapper" de metadata
+        # --- 6. NOVA LÓGICA DE VERIFICAÇÃO E MERGE ---
+        
+        original_directory = os.path.dirname(object_key)
+        output_directory = os.path.join(original_directory, "output")
+        
+        # Chama o módulo 'merge' para orquestrar a busca e o merge
+        # Esta função retorna o JSON *final* e a key do arquivo com o qual fez o merge
+        json_para_salvar, merged_with_key = merge.execute_merge_logic(
+            bedrock_runtime,
+            MODELO_ID_MICRO,
+            s3_client,
+            bucket_name,
+            output_directory,
+            dados_extraidos_json 
+        )
+        
+        if merged_with_key:
+            print(f"Log: Merge concluído. Usando dados mesclados.")
+        else:
+            print(f"Log: Salvamento direto. Usando dados extraídos.")
+            json_para_salvar = dados_extraidos_json 
+            
+        # --- 7. LÓGICA DE SALVAMENTO  ---
+        
+        data_extracao_obj = datetime.now(timezone.utc)
+        
         final_json_data = {
             "arquivo_origem": file_name_only,
             "tipo_documento": "termo_securitizacao",
-            "data_extracao": datetime.now(timezone.utc).isoformat(),
-            "dados_extraidos": dados_extraidos_json, # Aninha o resultado do LLM
-            "merge_info": None # Define como nulo
+            "data_extracao": data_extracao_obj.isoformat(),
+            "dados_extraidos": json_para_salvar,
+            "merge_info": {
+                "merged_with_file": merged_with_key
+            } if merged_with_key else None
         }
 
-        # Constrói o caminho de saída
-        output_key_json = object_key.replace(".pdf", ".json")
-        file_name = os.path.basename(output_key_json)
-        output_key = f"output/{file_name}"
+        # Cria o nome de arquivo único com timestamp
+        base_filename = os.path.splitext(file_name_only)[0]
+        timestamp_str = data_extracao_obj.strftime("%Y%m%d_%H%M%S")
+        json_filename = f"{base_filename}_{timestamp_str}.json"
         
+        output_key = os.path.join(output_directory, json_filename)
+
         s3_client.put_object(
             Bucket=bucket_name,
             Key=output_key,
@@ -330,7 +319,7 @@ def lambda_handler(event, context):
         )
         
         print(f"JSON salvo com sucesso em: s3://{bucket_name}/{output_key}")
-        return {"status": "success", "output_key": output_key}
+        return {"status": "success", "output_key": output_key, "merged": (merged_with_key is not None)}
 
     except Exception as e:
         print(f"Ocorreu um erro inesperado no handler: {type(e).__name__} - {e}")
