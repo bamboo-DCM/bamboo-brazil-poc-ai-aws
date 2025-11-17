@@ -16,6 +16,8 @@ O sistema é acionado quando um novo arquivo PDF é enviado para um bucket S3. A
 
 - Salva: Salva o JSON estruturado final em uma pasta output/ no mesmo bucket S3.
 
+- Validação: A validação é feita usando uma chave de hash composta (baseada em CNPJ_Emissor + Numero_Requerimento + Numero_Processo) para encontrar a linha correta no CSV. Em seguida, o script compara campos-chave (ex: Valor_Total_Registrado, Nome_Emissor, Data_Registro) para identificar divergências.
+
 ## Método Utilizado
 Para lidar com documentos que excedem a janela de contexto dos LLMs, este código implementa uma estratégia de `Sumarização Hierárquica` (MapReduce). Isso garante que documentos de qualquer tamanho possam ser processados, embora com um trade-off entre velocidade e a precisão da sumarização.
 
@@ -32,6 +34,20 @@ pip install -r requirements.txt
 - Configure o Ambiente:
 
   - Certifique-se de que suas credenciais AWS (aws configure) estão ativas e têm permissão para S3 (GetObject, PutObject) e Bedrock (Converse).
+  - Crie um arquivo .env na raiz do projeto. 
+```sh
+  # ID do modelo Bedrock a ser usado
+MODEL_ID="modelo-do-bedrock"
+
+# Localização do arquivo CSV da CVM
+CVM_BUCKET="nome-do-bucket"
+CVM_KEY="path-para-o-arquivo-cvm"
+
+# Prefixo (pasta) para salvar relatórios de reprovação
+REPORT_PREFIX="
+path-para-onde-salvar-os-relatorios "
+```
+
 
 - Faça o upload de um PDF de teste pequeno (2-3 páginas) para seu bucket S3.
 

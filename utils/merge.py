@@ -17,6 +17,7 @@ def _limpar_json_merge(json_string):
             else:
                 json_string = json_string[start_index:]
     return json_string
+# Em utils/merge.py
 
 def _call_bedrock_for_merge(bedrock_runtime, model_id, json_antigo_str, json_novo_str):
     """
@@ -25,32 +26,44 @@ def _call_bedrock_for_merge(bedrock_runtime, model_id, json_antigo_str, json_nov
     system_prompt = f"""
     You are an assistant specialized in consolidating contract data.
 
-    The "Old JSON" represents the current, correct state of the contract.
-    The "New JSON" represents a possible update (addendum).
+    The "Old JSON" represents the current, correct state of the contract (o "Termo").
+    The "New JSON" represents a new document (like an addendum or update).
 
     Your goal is to merge both into a *final consolidated JSON* following these strict rules:
 
-    1. Start with an exact copy of the "Old JSON".
+    0.  **IDENTITY RULE (CRITICAL):** The fields that identify the core offering
+        MUST be preserved from the "Old JSON". NEVER overwrite these fields,
+        even if the "New JSON" has a different value.
+        These identity fields are:
+        - `numero_processo`
+        - `numero_emissao`
+        - `isin`
+        - `securitizadora` (the entire object)
+        - `devedor` (the entire object)
 
-    2. Use the values from the "New JSON" to update the "Old JSON" ONLY IF:
-    - The new value is **not null**, **not empty**, and **not a placeholder**
-        such as "Não especificado", "N/A", "Não informado", or similar.
+    1.  Start with an exact copy of the "Old JSON".
 
-    3. If a field in the "New JSON" has one of these placeholder values,
-    the old value MUST be preserved — it must NOT be overwritten.
+    2.  For all *other* fields (like `volume_total`, `garantias`, `series`,
+        `agente_fiduciario`, etc.), use the values from the "New JSON" to
+        update the "Old JSON" ONLY IF:
+        - The new value is **not null**, **not empty**, and **not a placeholder**
+          such as "Não especificado", "N/A", "Não informado", or similar.
 
-    4. If a field in the "Old JSON" exists but is missing in the "New JSON",
-    keep the old value as-is.
+    3.  If a *non-identity* field (Rule 2) in the "New JSON" has a placeholder value,
+        the old value MUST be preserved.
 
-    5. When the field is a list (for example, "series"), perform a *deep merge*:
-    - Match items by their "nome" (e.g., "1ª Série", "2ª Série").
-    - Update only the subfields in that specific item that meet rule (2).
-    - Keep all other fields and series unchanged.
+    4.  If a field in the "Old JSON" exists but is missing in the "New JSON",
+        keep the old value as-is.
 
-    6. Never duplicate items in a list. If a series already exists, update it;
-    if it does not exist, append it.
+    5.  When the field is a list (for example, "series"), perform a *deep merge*:
+        - Match items by their "nome" (e.g., "1ª Série", "2ª Série").
+        - Update only the subfields in that specific item that meet rule (2).
+        - Keep all other fields and series unchanged.
 
-    7. Respond **only** with the final merged JSON object — no markdown, no comments, no explanations.
+    6.  Never duplicate items in a list. If a series already exists, update it;
+        if it does not exist, append it.
+
+    7.  Respond **only** with the final merged JSON object — no markdown, no comments, no explanations.
     """
  
     user_prompt = f"""
@@ -145,7 +158,6 @@ def download_json_from_s3(s3_client, bucket, key):
         print(f"Erro fatal ao baixar o JSON anterior ({key}): {e}")
         raise
 
-# --- Esta é a função principal que o handler.py irá chamar ---
 def execute_merge_logic(bedrock_runtime, model_id, s3_client, bucket, output_directory, dados_aditamento_novo):
     """
     Orquestra a lógica de merge. Encontra o JSON antigo, baixa, e chama o LLM para mesclar.
@@ -155,8 +167,8 @@ def execute_merge_logic(bedrock_runtime, model_id, s3_client, bucket, output_dir
     latest_json_key = find_latest_json(s3_client, bucket, output_directory)
     
     if latest_json_key is None:
-        # Lógica de "apenas salvar": o handler.py fará isso se retornarmos None
-        return None, None # Retorna (None, None) -> (JSON Mesclado, Key do Arquivo Antigo)
+
+        return None, None
 
     # 2. Carrega o JSON "pai"
     json_anterior_obj = download_json_from_s3(s3_client, bucket, latest_json_key)
@@ -167,7 +179,7 @@ def execute_merge_logic(bedrock_runtime, model_id, s3_client, bucket, output_dir
         # Fallback: apenas salva o novo
         return None, None
 
-    # 3. Executa o Merge com o LLM (A "segunda chamada")
+    # 3. Executa o Merge com o LLM 
     print("Iniciando 'Merge' com LLM...")
     json_antigo_str = json.dumps(json_anterior_dados, ensure_ascii=False)
     json_novo_str = json.dumps(dados_aditamento_novo, ensure_ascii=False)
