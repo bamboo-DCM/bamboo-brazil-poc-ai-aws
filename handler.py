@@ -8,9 +8,12 @@ import fitz  # PyMuPDF
 import re
 import time 
 from datetime import datetime, timezone
-import merge
+from utils import execute_merge_logic, execute_validation
 
-MODELO_ID_MICRO = "amazon.nova-pro-v1:0" 
+
+# --- Variáveis de Ambiente ---
+MODEL_ID = os.environ.get('MODEL_ID')
+REPORT_PREFIX = os.environ.get('REPORT_PREFIX')
 
 try:
     s3_client = boto3.client('s3')
@@ -63,7 +66,7 @@ def call_bedrock_llm(system_prompt, user_prompt, max_tokens=100, temperature=0.0
     for attempt in range(max_retries):
         try:
             response = bedrock_runtime.converse(
-                modelId=MODELO_ID_MICRO, 
+                modelId=MODEL_ID, 
                 messages=messages,
                 system=system_prompts,
                 inferenceConfig={"maxTokens": max_tokens, "temperature": temperature}
@@ -121,6 +124,7 @@ def get_dados_extraidos_schema():
         "tipo_documento": "string (ex: 'Termo de Securitização')",
         "numero_emissao": "string (Número da emissão, ex: '522')",
         "isin": "string (Código ISIN, se disponível, ex: 'BRRBRACRIY12')",
+        "numero_processo": "string (Número do processo CVM, ex: 'SRE/0001/2023')",
         
         # --- Partes Envolvidas ---
         "securitizadora": {
@@ -183,11 +187,13 @@ def lambda_handler(event, context):
     """
     Handler principal do Lambda.
     1. Executa o MapReduce no arquivo de entrada.
-    2. Verifica se um JSON anterior existe.
-    3. Se sim, chama o módulo de Merge.
-    4. Salva o resultado final.
+    2. Executa o Merge (se aplicável).
+    3. Executa a Validação CVM.
+    4. Salva o JSON principal (modificado) e, condicionalmente, 
+       salva o relatório de divergência no mesmo bucket, em um prefixo diferente.
     """
-    print("Iniciando a função Lambda (com lógica de Merge)...")
+
+    print("Iniciando a função Lambda")
     
     if not bedrock_runtime or not s3_client:
         print("Erro: Clientes Boto3 não foram inicializados.")
@@ -273,11 +279,10 @@ def lambda_handler(event, context):
         original_directory = os.path.dirname(object_key)
         output_directory = os.path.join(original_directory, "output")
         
-        # Chama o módulo 'merge' para orquestrar a busca e o merge
         # Esta função retorna o JSON *final* e a key do arquivo com o qual fez o merge
-        json_para_salvar, merged_with_key = merge.execute_merge_logic(
+        json_para_salvar, merged_with_key = execute_merge_logic(
             bedrock_runtime,
-            MODELO_ID_MICRO,
+            MODEL_ID,
             s3_client,
             bucket_name,
             output_directory,
@@ -290,25 +295,67 @@ def lambda_handler(event, context):
             print(f"Log: Salvamento direto. Usando dados extraídos.")
             json_para_salvar = dados_extraidos_json 
             
-        # --- 7. LÓGICA DE SALVAMENTO  ---
+
+        # --- 7.LÓGICA DE VALIDAÇÃO (Pós-Merge) ---
+        print("Iniciando Módulo de Validação CVM...")
+
+        resultado_validacao_completo = execute_validation(json_para_salvar)
         
+        status_final = resultado_validacao_completo.get("status")
+        
+        print(f"Log: Validação concluída. Status: {status_final}")
+
+
+        # --- 8. LÓGICA DE SALVAMENTO (Condicional Atualizada) ---
         data_extracao_obj = datetime.now(timezone.utc)
+        timestamp_str = data_extracao_obj.strftime("%Y%m%d_%H%M%S")
+        base_filename = os.path.splitext(file_name_only)[0]
+
+        # 8a. Modificar o JSON principal (adiciona o "carimbo" de status)
+        json_para_salvar['validacao_cvm'] = {"status": status_final}
+
+        # 8b. Salvar relatório de divergência (se REPROVADO)
+        if status_final == "REPROVADA":
+            if not REPORT_PREFIX:
+                print("AVISO: Status REPROVADA, mas a variável REPORT_PREFIX não está definida. Relatório de divergência não será salvo.")
+            else:
+                try:
+                    report_filename = f"{base_filename}_divergencia_{timestamp_str}.json"
+                    report_output_key = os.path.join(REPORT_PREFIX, report_filename)
+                    
+                    report_data = {
+                        "arquivo_origem": file_name_only,
+                        "data_reprovacao": data_extracao_obj.isoformat(),
+                        "relatorio_completo": resultado_validacao_completo
+                    }
+                    
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=report_output_key,
+                        Body=json.dumps(report_data, ensure_ascii=False, indent=2),
+                        ContentType='application/json'
+                    )
+                    print(f"Relatório de divergência salvo em: s3://{bucket_name}/{report_output_key}")
+                except Exception as e:
+                    print(f"ERRO CRÍTICO ao salvar relatório de divergência: {e}")
+
+
+        # 8c. Salvar o JSON principal
+      
+        tipo_documento_novo_arquivo = dados_extraidos_json.get("tipo_documento", "documento_desconhecido")
         
         final_json_data = {
             "arquivo_origem": file_name_only,
-            "tipo_documento": "termo_securitizacao",
+            "tipo_documento": tipo_documento_novo_arquivo,
             "data_extracao": data_extracao_obj.isoformat(),
-            "dados_extraidos": json_para_salvar,
+            "dados_extraidos": json_para_salvar, # 'json_para_salvar' é o JSON mesclado
             "merge_info": {
                 "merged_with_file": merged_with_key
             } if merged_with_key else None
         }
 
-        # Cria o nome de arquivo único com timestamp
-        base_filename = os.path.splitext(file_name_only)[0]
-        timestamp_str = data_extracao_obj.strftime("%Y%m%d_%H%M%S")
+        # Define o caminho de saída principal
         json_filename = f"{base_filename}_{timestamp_str}.json"
-        
         output_key = os.path.join(output_directory, json_filename)
 
         s3_client.put_object(
@@ -318,8 +365,14 @@ def lambda_handler(event, context):
             ContentType='application/json'
         )
         
-        print(f"JSON salvo com sucesso em: s3://{bucket_name}/{output_key}")
-        return {"status": "success", "output_key": output_key, "merged": (merged_with_key is not None)}
+        print(f"JSON principal salvo com sucesso em: s3://{bucket_name}/{output_key}")
+        
+        return {
+            "status": "success", 
+            "output_key": output_key, 
+            "merged": (merged_with_key is not None),
+            "validation_status": status_final 
+        }
 
     except Exception as e:
         print(f"Ocorreu um erro inesperado no handler: {type(e).__name__} - {e}")

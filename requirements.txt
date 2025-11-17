@@ -1,2 +1,4 @@
 pymupdf
 boto3
+pandas
+python-dotenv
