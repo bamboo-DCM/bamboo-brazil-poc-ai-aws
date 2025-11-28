@@ -2,22 +2,28 @@
 
 Este projeto contém uma função AWS Lambda projetada para processar documentos PDF extensos (como Termos de Securitização), extrair dados estruturados usando um modelo de IA Generativa (Amazon Bedrock) e salvar o resultado como um arquivo JSON.
 
-## Funcionalidade Principal
+## Funcionalidades Principais
 
-O sistema é acionado quando um novo arquivo PDF é enviado para um bucket S3. A função Lambda então:
+O sistema é acionado via S3 e executa um fluxo em 4 etapas:
 
-- Lê o PDF: Extrai o texto completo do documento.
+1.  **Extração (MapReduce):**
+    * Processa PDFs extensos dividindo-os em *chunks*.
+    * Utiliza prompts de "Caça" (*Hunting*) para garantir a captura exata de identificadores (CNPJ, Processo, Emissão).
+    * Gera um JSON estruturado inicial.
 
-- Divide (Split): Quebra o texto em centenas de chunks (pedaços) gerenciáveis.
+2.  **Consolidação (Merge):**
+    * Verifica se já existe um arquivo processado anteriormente para a mesma operação.
+    * Se existir (ex: subindo um Aditamento após o Termo original), o sistema funde os dados.
+    * **Regra:** Preserva a identidade do documento original e atualiza apenas os dados novos.
 
-- Mapeia (Map): Itera sobre cada chunk e usa um modelo "Micro" (ex: amazon.nova-lite-v1:0) para criar um pequeno sumário focado em dados relevantes.
+3.  **Validação Condicional (CVM 160):**
+    * O sistema verifica se o documento possui o **Número do Processo CVM**.
+    * **Sem Número (Termo Original):** Define status como `PENDENTE` e suspende a validação (evita falsos negativos).
+    * **Com Número (Anúncio/Aditamento):** Normaliza o formato do processo (ex: `CVM/SRE/...` para `SRE/0000/0000`), cria um **Hash Composto** e valida contra o CSV da CVM.
 
-- Reduz (Reduce): Concatena todos os sumários em um "super-sumário" e faz uma chamada final ao modelo para extrair o JSON completo deste contexto.
-
-- Salva: Salva o JSON estruturado final em uma pasta output/ no mesmo bucket S3.
-
-- Validação: A validação é feita usando uma chave de hash composta (baseada em CNPJ_Emissor + Numero_Requerimento + Numero_Processo) para encontrar a linha correta no CSV. Em seguida, o script compara campos-chave (ex: Valor_Total_Registrado, Nome_Emissor, Data_Registro) para identificar divergências.
-
+4.  **Saída (Output):**
+    * Salva o JSON final em `output/`.
+    * Se houver divergência na validação (status `REPROVADA`), gera um **Relatório de Erro** separado na pasta configurada.
 ## Método Utilizado
 Para lidar com documentos que excedem a janela de contexto dos LLMs, este código implementa uma estratégia de `Sumarização Hierárquica` (MapReduce). Isso garante que documentos de qualquer tamanho possam ser processados, embora com um trade-off entre velocidade e a precisão da sumarização.
 
