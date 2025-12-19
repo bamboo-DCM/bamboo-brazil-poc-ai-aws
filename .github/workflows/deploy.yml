@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/GUARD-231/pipeline-cicd'
   workflow_dispatch:
 
 permissions:
