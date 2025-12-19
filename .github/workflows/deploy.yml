@@ -40,4 +40,4 @@ jobs:
 
       # 5. Faz o Deploy
       - name: Serverless Deploy
-        run: serverless deploy --stage dev --verbose
+        run: npm install -g serverless@3
