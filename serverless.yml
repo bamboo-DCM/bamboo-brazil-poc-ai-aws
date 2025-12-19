@@ -14,14 +14,12 @@ provider:
       REPORT_PREFIX: "CVM/relatorios/"
       MAX_WORKERS: "15"
       
-      # CORRIGIDO: Tudo minúsculo (bamboo-ia-input)
       CVM_BUCKET: "bamboo-ia-input-${self:provider.stage}" 
       
       CVM_KEY: "CVM/oferta_resolucao_160.csv"
 
   ecr:
     images:
-      # CORRIGIDO: Tudo minúsculo
       bamboo-ia-image: 
         path: ./
         platform: linux/amd64
@@ -45,13 +43,11 @@ provider:
 functions:
   processor:
     image:
-      # CORRIGIDO: Deve ser igual ao nome lá de cima (tudo minúsculo)
       name: bamboo-ia-image 
       command:
         - handler.lambda_handler
     events:
       - s3:
-          # CORRIGIDO: Tudo minúsculo
           bucket: bamboo-ia-input-${self:provider.stage}
           event: s3:ObjectCreated:*
           rules:
