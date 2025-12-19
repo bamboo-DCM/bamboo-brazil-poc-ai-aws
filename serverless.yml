@@ -6,29 +6,29 @@ provider:
   name: aws
   region: us-east-1
   stage: ${opt:stage, 'dev'} 
-  timeout: 900 # 15 minutos (Máximo da AWS)
-  memorySize: 2048 # 2GB 
+  timeout: 900
+  memorySize: 2048 
   
-  # --- Variáveis de Ambiente Globais ---
   environment:
-    MODEL_ID: "amazon.nova-pro-v1:0"
-    REPORT_PREFIX: "CVM/relatorios/"
-    MAX_WORKERS: "15"
-    CVM_BUCKET: !Ref CvmBucket # Referência dinâmica ao bucket criado abaixo
-    CVM_KEY: "CVM/oferta_resolucao_160.csv"
+      MODEL_ID: "amazon.nova-pro-v1:0"
+      REPORT_PREFIX: "CVM/relatorios/"
+      MAX_WORKERS: "15"
+      
+      # CORRIGIDO: Tudo minúsculo (bamboo-ia-input)
+      CVM_BUCKET: "bamboo-ia-input-${self:provider.stage}" 
+      
+      CVM_KEY: "CVM/oferta_resolucao_160.csv"
 
-  # --- Configuração de Imagem Docker ---
   ecr:
     images:
-      bambooimage:
-        path: ./ # Procura o Dockerfile na raiz
-        platform: linux/amd64 # Garante compatibilidade na nuvem
+      # CORRIGIDO: Tudo minúsculo
+      bamboo-ia-image: 
+        path: ./
+        platform: linux/amd64
 
-  # --- Permissões (IAM Roles) ---
   iam:
     role:
       statements:
-        # Permissão S3 (Ler/Escrever)
         - Effect: Allow
           Action:
             - s3:GetObject
@@ -36,7 +36,6 @@ provider:
             - s3:ListBucket
           Resource:
             - "arn:aws:s3:::*" 
-        # Permissão Bedrock (IA)
         - Effect: Allow
           Action:
             - bedrock:InvokeModel
@@ -46,21 +45,15 @@ provider:
 functions:
   processor:
     image:
-      name: bambooimage # Usa a imagem definida acima
+      # CORRIGIDO: Deve ser igual ao nome lá de cima (tudo minúsculo)
+      name: bamboo-ia-image 
       command:
-        - handler.lambda_handler # Sobrescreve o CMD do Dockerfile se precisar
+        - handler.lambda_handler
     events:
       - s3:
-          bucket: bamboo-docs-input-${self:provider.stage} # Cria o bucket automaticamente
+          # CORRIGIDO: Tudo minúsculo
+          bucket: bamboo-ia-input-${self:provider.stage}
           event: s3:ObjectCreated:*
           rules:
             - suffix: .pdf
-          existing: true
-
-# Aqui criamos o bucket da CVM para guardar o CSV
-resources:
-  Resources:
-    CvmBucket:
-      Type: AWS::S3::Bucket
-      Properties:
-        BucketName: bamboo-cvm-data-${self:provider.stage}-${sls:instanceId}
+          # existing: true (Mantenha comentado/removido para ele criar o bucket)
