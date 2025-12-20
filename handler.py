@@ -70,7 +70,7 @@ def call_bedrock_llm(system_prompt, user_prompt, max_tokens=100, temperature=0.0
     base_delay_segundos = 2
     
     for attempt in range(max_retries):
-        try:
+        try:            
             response = bedrock_runtime.converse(
                 modelId=MODEL_ID, 
                 messages=messages,
