@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/GUARD-231/pipeline-cicd'
   workflow_dispatch:
 
 permissions:
@@ -17,32 +16,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Baixa o código
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Instala Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 3. Instala Dependências do Projeto (Plugins + Serverless local)
       - name: Install Dependencies
         run: npm install
-        # Ou 'npm ci' se tiver package-lock.json (mais seguro para CI)
 
-      # 4. Instala Serverless Framework v3 Globalmente (Garantia)
       - name: Install Serverless Framework
         run: npm install -g serverless@3
 
-      # 5. Autenticação Segura via Role (OIDC)
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::234118421196:role/bamboo-github-poc-ia
           aws-region: us-east-1
 
-      # 6. Faz o Deploy DE VERDADE
       - name: Serverless Deploy
         run: sls deploy --stage dev --verbose
