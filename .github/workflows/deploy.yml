@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'feat/GUARD-294/migrate-to-prod'
   workflow_dispatch:
 
 permissions:
@@ -34,8 +35,8 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::234118421196:role/bamboo-github-poc-ia
+          role-to-assume: arn:aws:iam::457992978309:role/poc-ia-github-actions
           aws-region: us-east-1
 
       - name: Serverless Deploy
-        run: sls deploy --stage dev --verbose
+        run: sls deploy --stage prod --verbose
