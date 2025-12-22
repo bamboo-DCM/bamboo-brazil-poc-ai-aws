@@ -1,0 +1,24 @@
+{
+  "name": "bamboo-brazil-poc-ai-aws",
+  "version": "1.0.0",
+  "description": "Este projeto contém uma função AWS Lambda projetada para processar documentos PDF extensos (como Termos de Securitização), extrair dados estruturados usando um modelo de IA Generativa (Amazon Bedrock) e salvar o resultado como um arquivo JSON.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bamboo-DCM/bamboo-brazil-poc-ai-aws.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/bamboo-DCM/bamboo-brazil-poc-ai-aws/issues"
+  },
+  "homepage": "https://github.com/bamboo-DCM/bamboo-brazil-poc-ai-aws#readme",
+  "devDependencies": {
+    "serverless": "^3.40.0"
+  }
+}

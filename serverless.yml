@@ -1,0 +1,55 @@
+service: bamboo-poc
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  region: us-east-1
+  stage: ${opt:stage, 'dev'} 
+  timeout: 900
+  memorySize: 2048 
+  
+  environment:
+      MODEL_ID: "amazon.nova-pro-v1:0"
+      REPORT_PREFIX: "CVM/relatorios/"
+      MAX_WORKERS: "15"
+      
+      CVM_BUCKET: "bamboo-ia-input-${self:provider.stage}" 
+      
+      CVM_KEY: "CVM/oferta_resolucao_160.csv"
+
+  ecr:
+    images:
+      bamboo-ia-image: 
+        path: ./
+        platform: linux/amd64
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:ListBucket
+          Resource:
+            - "arn:aws:s3:::*" 
+        - Effect: Allow
+          Action:
+            - bedrock:InvokeModel
+            - bedrock:InvokeModelWithResponseStream
+          Resource: "*"
+
+functions:
+  processor:
+    image:
+      name: bamboo-ia-image 
+      command:
+        - handler.lambda_handler
+    events:
+      - s3:
+          bucket: bamboo-ia-input-${self:provider.stage}
+          event: s3:ObjectCreated:*
+          rules:
+            - suffix: .pdf
+          # existing: true (Mantenha comentado/removido para ele criar o bucket)
