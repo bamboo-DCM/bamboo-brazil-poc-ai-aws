@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'feat/GUARD-294/migrate-to-prod'
   workflow_dispatch:
 
 permissions:
